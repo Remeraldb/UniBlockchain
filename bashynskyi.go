@@ -10,10 +10,14 @@ import (
 	"time"
 )
 
-// Константа для місяця народження
-const birthMonthSuffix = "02"
+// --- КОНСТАНТИ ТА НАЛАШТУВАННЯ ---
+const (
+	BashynskyiBirthMonth = "02"         // Місяць народження (для перевірки хешу)
+	BashynskyiNonce      = 19022006     // ДеньМісяцьРік (для генезис-блоку)
+	BashynskyiPrevHash   = "Bashynskyi" // Прізвище для генезис-блоку
+)
 
-// BashynskyiTransaction представляє транзакцію
+// BashynskyiTransaction - структура транзакції
 type BashynskyiTransaction struct {
 	Sender    string `json:"sender"`
 	Recipient string `json:"recipient"`
@@ -21,169 +25,138 @@ type BashynskyiTransaction struct {
 	TXID      string `json:"txid"`
 }
 
-// BashynskyiBlock представляє блок
+// BashynskyiBlock - структура окремого блоку
 type BashynskyiBlock struct {
 	Index        int                     `json:"index"`
 	Timestamp    int64                   `json:"timestamp"`
 	Transactions []BashynskyiTransaction `json:"transactions"`
-	Proof        int                     `json:"proof"`
+	Proof        int                     `json:"proof"` // Nonce
 	PreviousHash string                  `json:"previous_hash"`
 	Hash         string                  `json:"hash"`
 }
 
-// BashynskyiBlockchain представляє сам блокчейн
+// BashynskyiBlockchain - структура ланцюга
 type BashynskyiBlockchain struct {
 	Chain               []BashynskyiBlock
 	CurrentTransactions []BashynskyiTransaction
 }
 
-// NewBashynskyiTransaction створює нову транзакцію та обчислює її TXID
+// --- МЕТОДИ ДЛЯ ТРАНЗАКЦІЙ ---
+
+// NewBashynskyiTransaction створює транзакцію та генерує її ідентифікатор
 func NewBashynskyiTransaction(sender, recipient string, amount int) BashynskyiTransaction {
 	tx := BashynskyiTransaction{
 		Sender:    sender,
 		Recipient: recipient,
 		Amount:    amount,
 	}
-	// Генерація TXID на основі даних транзакції
 	data := sender + recipient + strconv.Itoa(amount)
 	hash := sha256.Sum256([]byte(data))
 	tx.TXID = hex.EncodeToString(hash[:])
 	return tx
 }
 
-// CalculateHash обчислює хеш блоку на основі його полів
-func (b *BashynskyiBlock) CalculateHash() string {
-	// Перетворюємо транзакції в рядок (для простоти використаємо JSON)
+// --- МЕТОДИ ДЛЯ БЛОКІВ ТА ХЕШУВАННЯ ---
+
+// CalculateBashynskyiHash обчислює SHA-256 хеш блоку
+func (b *BashynskyiBlock) CalculateBashynskyiHash() string {
 	txBytes, _ := json.Marshal(b.Transactions)
-	record := strconv.Itoa(b.Index) + strconv.FormatInt(b.Timestamp, 10) + string(txBytes) +
-		strconv.Itoa(b.Proof) + b.PreviousHash
-	h := sha256.Sum256([]byte(record))
-	return hex.EncodeToString(h[:])
+	// Об'єднуємо всі дані блоку в один рядок для хешування
+	record := strconv.Itoa(b.Index) +
+		strconv.FormatInt(b.Timestamp, 10) +
+		string(txBytes) +
+		strconv.Itoa(b.Proof) +
+		b.PreviousHash
+
+	hash := sha256.Sum256([]byte(record))
+	return hex.EncodeToString(hash[:])
 }
 
-// NewBashynskyiBlockchain створює новий блокчейн з генезис-блоком
+// --- МЕТОДИ БЛОКЧЕЙНУ ---
+
+// NewBashynskyiBlockchain ініціалізує блокчейн та створює генезис-блок
 func NewBashynskyiBlockchain() *BashynskyiBlockchain {
 	bc := &BashynskyiBlockchain{
 		Chain:               []BashynskyiBlock{},
 		CurrentTransactions: []BashynskyiTransaction{},
 	}
-	// Створюємо генезис-блок
-	genesisBlock := bc.createGenesisBlock()
-	bc.Chain = append(bc.Chain, genesisBlock)
+	bc.createBashynskyiGenesis()
 	return bc
 }
 
-// createGenesisBlock будує генезис-блок з попереднім хешем "Bashynskyi" та nonce = 19022006
-// і підбирає timestamp так, щоб хеш блоку закінчувався на birthMonthSuffix ("02")
-func (bc *BashynskyiBlockchain) createGenesisBlock() BashynskyiBlock {
-	// Задані параметри
-	index := 0
-	previousHash := "Bashynskyi"
-	proof := 19022006 // день місяць рік народження: 19 02 2006
-	transactions := []BashynskyiTransaction{}
-
-	// Початкова мітка часу (можна взяти поточну)
+// createBashynskyiGenesis створює перший блок (Genesis)
+func (bc *BashynskyiBlockchain) createBashynskyiGenesis() {
 	timestamp := time.Now().Unix()
-	// Шукаємо timestamp, при якому хеш закінчується на "02"
+
+	// Шукаємо такий timestamp, щоб при фіксованому Nonce (дата народження)
+	// хеш закінчувався на місяць народження
 	for {
-		block := BashynskyiBlock{
-			Index:        index,
+		genesisBlock := BashynskyiBlock{
+			Index:        0,
 			Timestamp:    timestamp,
-			Transactions: transactions,
-			Proof:        proof,
-			PreviousHash: previousHash,
+			Transactions: []BashynskyiTransaction{},
+			Proof:        BashynskyiNonce,
+			PreviousHash: BashynskyiPrevHash,
 		}
-		block.Hash = block.CalculateHash()
-		if strings.HasSuffix(block.Hash, birthMonthSuffix) {
-			return block
+		genesisBlock.Hash = genesisBlock.CalculateBashynskyiHash()
+
+		if strings.HasSuffix(genesisBlock.Hash, BashynskyiBirthMonth) {
+			bc.Chain = append(bc.Chain, genesisBlock)
+			break
 		}
-		timestamp++ // збільшуємо і пробуємо далі
+		timestamp++ // Перебір часу для валідності умови в лабі
 	}
 }
 
-// AddBlock додає новий блок до ланцюга після майнінгу (пошуку proof, що дає потрібне закінчення хешу)
-func (bc *BashynskyiBlockchain) AddBlock(transactions []BashynskyiTransaction) error {
-	previousBlock := bc.Chain[len(bc.Chain)-1]
+// AddBashynskyiBlock додає новий блок у ланцюг
+func (bc *BashynskyiBlockchain) AddBashynskyiBlock(transactions []BashynskyiTransaction) {
+	prevBlock := bc.Chain[len(bc.Chain)-1]
 	newBlock := BashynskyiBlock{
-		Index:        previousBlock.Index + 1,
-		Timestamp:    time.Now().Unix(), // поточна мітка часу
+		Index:        prevBlock.Index + 1,
+		Timestamp:    time.Now().Unix(),
 		Transactions: transactions,
-		Proof:        0, // почнемо з нуля
-		PreviousHash: previousBlock.Hash,
+		Proof:        0,
+		PreviousHash: prevBlock.Hash,
 	}
 
-	// Майнінг: збільшуємо Proof, поки хеш не закінчиться на "02"
+	// Процес майнінгу: підбір Proof (Nonce) для отримання потрібного суфікса хешу
 	for {
-		newBlock.Hash = newBlock.CalculateHash()
-		if strings.HasSuffix(newBlock.Hash, birthMonthSuffix) {
+		newBlock.Hash = newBlock.CalculateBashynskyiHash()
+		if strings.HasSuffix(newBlock.Hash, BashynskyiBirthMonth) {
 			break
 		}
 		newBlock.Proof++
 	}
 
 	bc.Chain = append(bc.Chain, newBlock)
-	return nil
 }
 
-// AddTransaction додає транзакцію до поточного списку та повертає її TXID
-func (bc *BashynskyiBlockchain) AddTransaction(transaction BashynskyiTransaction) string {
-	bc.CurrentTransactions = append(bc.CurrentTransactions, transaction)
-	return transaction.TXID
-}
+// --- ВІЗУАЛІЗАЦІЯ ТА ПЕРЕВІРКА ---
 
-// String виводить блокчейн у гарному форматі
-func (bc *BashynskyiBlockchain) String() string {
-	var s string
-	for i, block := range bc.Chain {
-		s += fmt.Sprintf("Block %d:\n", i)
-		s += fmt.Sprintf("  Index: %d\n", block.Index)
-		s += fmt.Sprintf("  Timestamp: %d\n", block.Timestamp)
-		s += fmt.Sprintf("  Transactions: %v\n", block.Transactions)
-		s += fmt.Sprintf("  Proof: %d\n", block.Proof)
-		s += fmt.Sprintf("  PreviousHash: %s\n", block.PreviousHash)
-		s += fmt.Sprintf("  Hash: %s\n", block.Hash)
-		s += fmt.Sprintf("  Hash ends with '%s': %v\n", birthMonthSuffix, strings.HasSuffix(block.Hash, birthMonthSuffix))
-		s += "\n"
+func (bc *BashynskyiBlockchain) PrintBlockchain() {
+	for _, block := range bc.Chain {
+		fmt.Printf("--- Block %d ---\n", block.Index)
+		fmt.Printf("Timestamp: %d\n", block.Timestamp)
+		fmt.Printf("Proof:     %d\n", block.Proof)
+		fmt.Printf("Prev Hash: %s\n", block.PreviousHash)
+		fmt.Printf("Hash:      %s\n", block.Hash)
+		fmt.Printf("Valid:     %v (ends with %s)\n\n",
+			strings.HasSuffix(block.Hash, BashynskyiBirthMonth), BashynskyiBirthMonth)
 	}
-	return s
 }
 
 func main() {
-	// Ініціалізація блокчейну
-	bc := NewBashynskyiBlockchain()
-	fmt.Println("Genesis block created:")
-	fmt.Println(bc)
+	// 1. Створення блокчейну (з генезис-блоком)
+	blockchain := NewBashynskyiBlockchain()
 
-	// Додаємо транзакцію
-	tx1 := NewBashynskyiTransaction("Alice", "Bob", 10)
-	txid := bc.AddTransaction(tx1)
-	fmt.Printf("Transaction added with TXID: %s\n", txid)
+	// 2. Створення та додавання транзакцій
+	tx1 := NewBashynskyiTransaction("System", "Bashynskyi", 100)
+	blockchain.CurrentTransactions = append(blockchain.CurrentTransactions, tx1)
 
-	// Майнінг нового блоку з поточною транзакцією
-	err := bc.AddBlock(bc.CurrentTransactions)
-	if err != nil {
-		fmt.Println("Error adding block:", err)
-		return
-	}
-	// Очищаємо список поточних транзакцій після додавання блоку
-	bc.CurrentTransactions = []BashynskyiTransaction{}
+	// 3. Майнінг нового блоку
+	blockchain.AddBashynskyiBlock(blockchain.CurrentTransactions)
+	blockchain.CurrentTransactions = []BashynskyiTransaction{} // очистка
 
-	fmt.Println("After mining a new block:")
-	fmt.Println(bc)
-
-	// Додамо ще одну транзакцію і ще один блок
-	tx2 := NewBashynskyiTransaction("Bob", "Charlie", 5)
-	bc.AddTransaction(tx2)
-	bc.AddBlock(bc.CurrentTransactions)
-	bc.CurrentTransactions = []BashynskyiTransaction{}
-
-	fmt.Println("After second block:")
-	fmt.Println(bc)
-
-	// Перевірка, що всі хеші закінчуються на "02"
-	fmt.Println("Verification that all block hashes end with '02':")
-	for i, block := range bc.Chain {
-		valid := strings.HasSuffix(block.Hash, birthMonthSuffix)
-		fmt.Printf("Block %d: %v\n", i, valid)
-	}
+	// 4. Вивід результату
+	blockchain.PrintBlockchain()
 }
