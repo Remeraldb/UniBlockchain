@@ -5,158 +5,204 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
-// --- КОНСТАНТИ ТА НАЛАШТУВАННЯ ---
-const (
-	BashynskyiBirthMonth = "02"         // Місяць народження (для перевірки хешу)
-	BashynskyiNonce      = 19022006     // ДеньМісяцьРік (для генезис-блоку)
-	BashynskyiPrevHash   = "Bashynskyi" // Прізвище для генезис-блоку
-)
+// -------------------- СТРУКТУРИ --------------------
 
-// BashynskyiTransaction - структура транзакції
-type BashynskyiTransaction struct {
+// Transaction представляє одну транзакцію
+type Transaction struct {
 	Sender    string `json:"sender"`
 	Recipient string `json:"recipient"`
 	Amount    int    `json:"amount"`
 	TXID      string `json:"txid"`
 }
 
-// BashynskyiBlock - структура окремого блоку
-type BashynskyiBlock struct {
-	Index        int                     `json:"index"`
-	Timestamp    int64                   `json:"timestamp"`
-	Transactions []BashynskyiTransaction `json:"transactions"`
-	Proof        int                     `json:"proof"` // Nonce
-	PreviousHash string                  `json:"previous_hash"`
-	Hash         string                  `json:"hash"`
+// Block представляє один блок у блокчейні
+type Block struct {
+	Index        int           `json:"index"`
+	Timestamp    int64         `json:"timestamp"`
+	Transactions []Transaction `json:"transactions"`
+	Proof        int           `json:"proof"`
+	PreviousHash string        `json:"previous_hash"`
+	Hash         string        `json:"hash"`
 }
 
-// BashynskyiBlockchain - структура ланцюга
-type BashynskyiBlockchain struct {
-	Chain               []BashynskyiBlock
-	CurrentTransactions []BashynskyiTransaction
+// Blockchain містить ланцюг блоків та Mempool
+type Blockchain struct {
+	Chain   []Block
+	Mempool []Transaction
 }
 
-// --- МЕТОДИ ДЛЯ ТРАНЗАКЦІЙ ---
+// -------------------- ДОПОМІЖНІ ФУНКЦІЇ --------------------
 
-// NewBashynskyiTransaction створює транзакцію та генерує її ідентифікатор
-func NewBashynskyiTransaction(sender, recipient string, amount int) BashynskyiTransaction {
-	tx := BashynskyiTransaction{
-		Sender:    sender,
-		Recipient: recipient,
-		Amount:    amount,
-	}
+// generateTXID створює унікальний ідентифікатор транзакції
+func generateTXID(sender, recipient string, amount int) string {
 	data := sender + recipient + strconv.Itoa(amount)
 	hash := sha256.Sum256([]byte(data))
-	tx.TXID = hex.EncodeToString(hash[:])
-	return tx
+	return hex.EncodeToString(hash[:])
 }
 
-// --- МЕТОДИ ДЛЯ БЛОКІВ ТА ХЕШУВАННЯ ---
-
-// CalculateBashynskyiHash обчислює SHA-256 хеш блоку
-func (b *BashynskyiBlock) CalculateBashynskyiHash() string {
+// calculateHash обчислює хеш блоку
+func (b *Block) calculateHash() string {
 	txBytes, _ := json.Marshal(b.Transactions)
-	// Об'єднуємо всі дані блоку в один рядок для хешування
 	record := strconv.Itoa(b.Index) +
 		strconv.FormatInt(b.Timestamp, 10) +
 		string(txBytes) +
 		strconv.Itoa(b.Proof) +
 		b.PreviousHash
-
 	hash := sha256.Sum256([]byte(record))
 	return hex.EncodeToString(hash[:])
 }
 
-// --- МЕТОДИ БЛОКЧЕЙНУ ---
+// validProof перевіряє, чи хеш починається з "0000"
+func validProof(proof int, lastProof int, previousHash string, transactions []Transaction, timestamp int64) bool {
+	guess := strconv.Itoa(lastProof) + strconv.Itoa(proof) + previousHash
+	hash := sha256.Sum256([]byte(guess))
+	hashStr := hex.EncodeToString(hash[:])
+	return strings.HasPrefix(hashStr, "0000")
+}
 
-// NewBashynskyiBlockchain ініціалізує блокчейн та створює генезис-блок
-func NewBashynskyiBlockchain() *BashynskyiBlockchain {
-	bc := &BashynskyiBlockchain{
-		Chain:               []BashynskyiBlock{},
-		CurrentTransactions: []BashynskyiTransaction{},
+// proofOfWork знаходить proof (nonce), який задовольняє умову
+func proofOfWork(lastProof int, previousHash string, transactions []Transaction, timestamp int64) int {
+	proof := 0
+	for !validProof(proof, lastProof, previousHash, transactions, timestamp) {
+		proof++
 	}
-	bc.createBashynskyiGenesis()
+	return proof
+}
+
+// -------------------- МЕТОДИ БЛОКЧЕЙНУ --------------------
+
+// NewBlockchain створює новий блокчейн із генезис-блоком
+func NewBlockchain() *Blockchain {
+	bc := &Blockchain{
+		Chain:   []Block{},
+		Mempool: []Transaction{},
+	}
+	bc.createGenesisBlock()
 	return bc
 }
 
-// createBashynskyiGenesis створює перший блок (Genesis)
-func (bc *BashynskyiBlockchain) createBashynskyiGenesis() {
-	timestamp := time.Now().Unix()
-
-	// Шукаємо такий timestamp, щоб при фіксованому Nonce (дата народження)
-	// хеш закінчувався на місяць народження
-	for {
-		genesisBlock := BashynskyiBlock{
-			Index:        0,
-			Timestamp:    timestamp,
-			Transactions: []BashynskyiTransaction{},
-			Proof:        BashynskyiNonce,
-			PreviousHash: BashynskyiPrevHash,
-		}
-		genesisBlock.Hash = genesisBlock.CalculateBashynskyiHash()
-
-		if strings.HasSuffix(genesisBlock.Hash, BashynskyiBirthMonth) {
-			bc.Chain = append(bc.Chain, genesisBlock)
-			break
-		}
-		timestamp++ // Перебір часу для валідності умови в лабі
+// createGenesisBlock створює перший блок (індекс 0, previous_hash = "0")
+func (bc *Blockchain) createGenesisBlock() {
+	genesis := Block{
+		Index:        0,
+		Timestamp:    time.Now().Unix(),
+		Transactions: []Transaction{},
+		Proof:        0,
+		PreviousHash: "0",
 	}
+	genesis.Hash = genesis.calculateHash()
+	bc.Chain = append(bc.Chain, genesis)
 }
 
-// AddBashynskyiBlock додає новий блок у ланцюг
-func (bc *BashynskyiBlockchain) AddBashynskyiBlock(transactions []BashynskyiTransaction) {
+// addBlock створює новий блок із заданими транзакціями (виконує майнінг)
+func (bc *Blockchain) addBlock(transactions []Transaction) {
 	prevBlock := bc.Chain[len(bc.Chain)-1]
-	newBlock := BashynskyiBlock{
+	newProof := proofOfWork(prevBlock.Proof, prevBlock.Hash, transactions, time.Now().Unix())
+
+	newBlock := Block{
 		Index:        prevBlock.Index + 1,
 		Timestamp:    time.Now().Unix(),
 		Transactions: transactions,
-		Proof:        0,
+		Proof:        newProof,
 		PreviousHash: prevBlock.Hash,
 	}
-
-	// Процес майнінгу: підбір Proof (Nonce) для отримання потрібного суфікса хешу
-	for {
-		newBlock.Hash = newBlock.CalculateBashynskyiHash()
-		if strings.HasSuffix(newBlock.Hash, BashynskyiBirthMonth) {
-			break
-		}
-		newBlock.Proof++
-	}
-
+	newBlock.Hash = newBlock.calculateHash()
 	bc.Chain = append(bc.Chain, newBlock)
 }
 
-// --- ВІЗУАЛІЗАЦІЯ ТА ПЕРЕВІРКА ---
+// -------------------- API-ОБРОБНИКИ (GIN) --------------------
 
-func (bc *BashynskyiBlockchain) PrintBlockchain() {
-	for _, block := range bc.Chain {
-		fmt.Printf("--- Block %d ---\n", block.Index)
-		fmt.Printf("Timestamp: %d\n", block.Timestamp)
-		fmt.Printf("Proof:     %d\n", block.Proof)
-		fmt.Printf("Prev Hash: %s\n", block.PreviousHash)
-		fmt.Printf("Hash:      %s\n", block.Hash)
-		fmt.Printf("Valid:     %v (ends with %s)\n\n",
-			strings.HasSuffix(block.Hash, BashynskyiBirthMonth), BashynskyiBirthMonth)
+// formatResponse уніфікує відповіді сервера
+func formatResponse(status string, data interface{}) gin.H {
+	return gin.H{
+		"status": status,
+		"data":   data,
 	}
 }
 
+// getBlockchainHandler повертає весь ланцюг блоків
+func getBlockchainHandler(c *gin.Context, bc *Blockchain) {
+	c.JSON(http.StatusOK, formatResponse("success", bc.Chain))
+}
+
+// addTransactionHandler додає нову транзакцію в Mempool
+func addTransactionHandler(c *gin.Context, bc *Blockchain) {
+	var tx Transaction
+	if err := c.ShouldBindJSON(&tx); err != nil {
+		c.JSON(http.StatusBadRequest, formatResponse("error", "Invalid JSON"))
+		return
+	}
+
+	// Генеруємо TXID
+	tx.TXID = generateTXID(tx.Sender, tx.Recipient, tx.Amount)
+
+	// Додаємо в Mempool
+	bc.Mempool = append(bc.Mempool, tx)
+
+	c.JSON(http.StatusCreated, formatResponse("success", gin.H{
+		"message":     "Transaction added to mempool",
+		"transaction": tx,
+	}))
+}
+
+// mineBlockHandler виконує майнінг: бере всі транзакції з Mempool, створює блок, очищує Mempool
+func mineBlockHandler(c *gin.Context, bc *Blockchain) {
+	if len(bc.Mempool) == 0 {
+		c.JSON(http.StatusBadRequest, formatResponse("error", "No transactions to mine"))
+		return
+	}
+
+	// Копіюємо поточні транзакції з Mempool
+	transactionsToMine := make([]Transaction, len(bc.Mempool))
+	copy(transactionsToMine, bc.Mempool)
+
+	// Додаємо новий блок із цими транзакціями
+	bc.addBlock(transactionsToMine)
+
+	// Очищуємо Mempool
+	bc.Mempool = []Transaction{}
+
+	// Отримуємо щойно доданий блок
+	newBlock := bc.Chain[len(bc.Chain)-1]
+
+	c.JSON(http.StatusOK, formatResponse("success", gin.H{
+		"message":      "New block mined successfully",
+		"block_index":  newBlock.Index,
+		"block_hash":   newBlock.Hash,
+		"proof":        newBlock.Proof,
+		"transactions": newBlock.Transactions,
+	}))
+}
+
+// -------------------- ГОЛОВНА ФУНКЦІЯ --------------------
+
 func main() {
-	// 1. Створення блокчейну (з генезис-блоком)
-	blockchain := NewBashynskyiBlockchain()
+	// Ініціалізація блокчейну
+	blockchain := NewBlockchain()
 
-	// 2. Створення та додавання транзакцій
-	tx1 := NewBashynskyiTransaction("System", "Bashynskyi", 100)
-	blockchain.CurrentTransactions = append(blockchain.CurrentTransactions, tx1)
+	// Створення маршрутизатора Gin
+	r := gin.Default()
 
-	// 3. Майнінг нового блоку
-	blockchain.AddBashynskyiBlock(blockchain.CurrentTransactions)
-	blockchain.CurrentTransactions = []BashynskyiTransaction{} // очистка
+	// Ендпоінти API
+	r.GET("/blockchain", func(c *gin.Context) {
+		getBlockchainHandler(c, blockchain)
+	})
+	r.POST("/transaction", func(c *gin.Context) {
+		addTransactionHandler(c, blockchain)
+	})
+	r.GET("/mine", func(c *gin.Context) {
+		mineBlockHandler(c, blockchain)
+	})
 
-	// 4. Вивід результату
-	blockchain.PrintBlockchain()
+	// Запуск сервера на порту 8088
+	fmt.Println("Server is running on http://localhost:8088")
+	r.Run(":8088")
 }
