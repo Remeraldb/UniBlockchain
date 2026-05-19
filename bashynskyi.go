@@ -13,17 +13,23 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// -------------------- СТРУКТУРИ --------------------
+// -------------------- СТРУКТУРИ РЕЄСТРУ ТА БЛОКЧЕЙНУ --------------------
 
-// Transaction представляє одну транзакцію
-type Transaction struct {
-	Sender    string `json:"sender"`
-	Recipient string `json:"recipient"`
-	Amount    int    `json:"amount"`
-	TXID      string `json:"txid"`
+// RegistryRecord – запис цифрового реєстру (предметна область: студенти)
+type RegistryRecord struct {
+	RecordID  string `json:"record_id"` // унікальний ідентифікатор запису
+	FullName  string `json:"full_name"` // ПІБ студента
+	Data      string `json:"data"`      // додаткова інформація (наприклад, спеціальність)
+	Timestamp int64  `json:"timestamp"` // час створення запису
 }
 
-// Block представляє один блок у блокчейні
+// Transaction – одиниця, що зберігається в Mempool та блоках
+type Transaction struct {
+	TXID   string         `json:"txid"`
+	Record RegistryRecord `json:"record"`
+}
+
+// Block – структура блоку
 type Block struct {
 	Index        int           `json:"index"`
 	Timestamp    int64         `json:"timestamp"`
@@ -33,7 +39,7 @@ type Block struct {
 	Hash         string        `json:"hash"`
 }
 
-// Blockchain містить ланцюг блоків та Mempool
+// Blockchain – основний об'єкт
 type Blockchain struct {
 	Chain   []Block
 	Mempool []Transaction
@@ -41,9 +47,9 @@ type Blockchain struct {
 
 // -------------------- ДОПОМІЖНІ ФУНКЦІЇ --------------------
 
-// generateTXID створює унікальний ідентифікатор транзакції
-func generateTXID(sender, recipient string, amount int) string {
-	data := sender + recipient + strconv.Itoa(amount)
+// generateTXID створює унікальний ID транзакції на основі даних запису
+func generateTXID(record RegistryRecord) string {
+	data := record.RecordID + record.FullName + record.Data + strconv.FormatInt(record.Timestamp, 10)
 	hash := sha256.Sum256([]byte(data))
 	return hex.EncodeToString(hash[:])
 }
@@ -68,7 +74,7 @@ func validProof(proof int, lastProof int, previousHash string, transactions []Tr
 	return strings.HasPrefix(hashStr, "0000")
 }
 
-// proofOfWork знаходить proof (nonce), який задовольняє умову
+// proofOfWork знаходить proof (nonce), який задовольняє умову PoW
 func proofOfWork(lastProof int, previousHash string, transactions []Transaction, timestamp int64) int {
 	proof := 0
 	for !validProof(proof, lastProof, previousHash, transactions, timestamp) {
@@ -89,7 +95,7 @@ func NewBlockchain() *Blockchain {
 	return bc
 }
 
-// createGenesisBlock створює перший блок (індекс 0, previous_hash = "0")
+// createGenesisBlock створює перший блок (порожній)
 func (bc *Blockchain) createGenesisBlock() {
 	genesis := Block{
 		Index:        0,
@@ -102,7 +108,7 @@ func (bc *Blockchain) createGenesisBlock() {
 	bc.Chain = append(bc.Chain, genesis)
 }
 
-// addBlock створює новий блок із заданими транзакціями (виконує майнінг)
+// addBlock додає новий блок (виконується під час майнінгу)
 func (bc *Blockchain) addBlock(transactions []Transaction) {
 	prevBlock := bc.Chain[len(bc.Chain)-1]
 	newProof := proofOfWork(prevBlock.Proof, prevBlock.Hash, transactions, time.Now().Unix())
@@ -118,9 +124,32 @@ func (bc *Blockchain) addBlock(transactions []Transaction) {
 	bc.Chain = append(bc.Chain, newBlock)
 }
 
+// getAllRecords – збирає всі RegistryRecord з усіх блоків
+func (bc *Blockchain) getAllRecords() []RegistryRecord {
+	var records []RegistryRecord
+	for _, block := range bc.Chain {
+		for _, tx := range block.Transactions {
+			records = append(records, tx.Record)
+		}
+	}
+	return records
+}
+
+// findRecordByID – перевіряє існування запису за RecordID
+func (bc *Blockchain) findRecordByID(recordID string) *RegistryRecord {
+	for _, block := range bc.Chain {
+		for _, tx := range block.Transactions {
+			if tx.Record.RecordID == recordID {
+				return &tx.Record
+			}
+		}
+	}
+	return nil
+}
+
 // -------------------- API-ОБРОБНИКИ (GIN) --------------------
 
-// formatResponse уніфікує відповіді сервера
+// formatResponse уніфікує відповіді
 func formatResponse(status string, data interface{}) gin.H {
 	return gin.H{
 		"status": status,
@@ -128,58 +157,80 @@ func formatResponse(status string, data interface{}) gin.H {
 	}
 }
 
-// getBlockchainHandler повертає весь ланцюг блоків
-func getBlockchainHandler(c *gin.Context, bc *Blockchain) {
-	c.JSON(http.StatusOK, formatResponse("success", bc.Chain))
-}
-
-// addTransactionHandler додає нову транзакцію в Mempool
-func addTransactionHandler(c *gin.Context, bc *Blockchain) {
-	var tx Transaction
-	if err := c.ShouldBindJSON(&tx); err != nil {
+// 1. POST /registry/record – додати запис реєстру (створює транзакцію в Mempool)
+func addRecordHandler(c *gin.Context, bc *Blockchain) {
+	var record RegistryRecord
+	if err := c.ShouldBindJSON(&record); err != nil {
 		c.JSON(http.StatusBadRequest, formatResponse("error", "Invalid JSON"))
 		return
 	}
+	// Якщо RecordID не задано клієнтом – згенеруємо унікальний (опційно)
+	if record.RecordID == "" {
+		record.RecordID = generateTXID(record) // простий спосіб
+	}
+	record.Timestamp = time.Now().Unix()
 
-	// Генеруємо TXID
-	tx.TXID = generateTXID(tx.Sender, tx.Recipient, tx.Amount)
-
+	// Створюємо транзакцію
+	tx := Transaction{
+		TXID:   generateTXID(record),
+		Record: record,
+	}
 	// Додаємо в Mempool
 	bc.Mempool = append(bc.Mempool, tx)
 
 	c.JSON(http.StatusCreated, formatResponse("success", gin.H{
-		"message":     "Transaction added to mempool",
-		"transaction": tx,
+		"message": "Record added to mempool",
+		"txid":    tx.TXID,
+		"record":  record,
 	}))
 }
 
-// mineBlockHandler виконує майнінг: бере всі транзакції з Mempool, створює блок, очищує Mempool
-func mineBlockHandler(c *gin.Context, bc *Blockchain) {
+// 2. GET /registry/records – отримати всі записи (читання блокчейну)
+func getRecordsHandler(c *gin.Context, bc *Blockchain) {
+	records := bc.getAllRecords()
+	c.JSON(http.StatusOK, formatResponse("success", records))
+}
+
+// 3. GET /registry/verify/:id – перевірити існування запису за RecordID
+func verifyRecordHandler(c *gin.Context, bc *Blockchain) {
+	recordID := c.Param("id")
+	record := bc.findRecordByID(recordID)
+	if record == nil {
+		c.JSON(http.StatusNotFound, formatResponse("error", "Record not found"))
+		return
+	}
+	c.JSON(http.StatusOK, formatResponse("success", record))
+}
+
+// 4. GET /mine – майнінг (взяття всіх транзакцій з Mempool, створення блоку)
+func mineHandler(c *gin.Context, bc *Blockchain) {
 	if len(bc.Mempool) == 0 {
 		c.JSON(http.StatusBadRequest, formatResponse("error", "No transactions to mine"))
 		return
 	}
-
-	// Копіюємо поточні транзакції з Mempool
+	// Копіюємо поточні транзакції
 	transactionsToMine := make([]Transaction, len(bc.Mempool))
 	copy(transactionsToMine, bc.Mempool)
 
-	// Додаємо новий блок із цими транзакціями
+	// Додаємо новий блок
 	bc.addBlock(transactionsToMine)
 
 	// Очищуємо Mempool
 	bc.Mempool = []Transaction{}
 
-	// Отримуємо щойно доданий блок
 	newBlock := bc.Chain[len(bc.Chain)-1]
-
 	c.JSON(http.StatusOK, formatResponse("success", gin.H{
-		"message":      "New block mined successfully",
+		"message":      "New block mined",
 		"block_index":  newBlock.Index,
 		"block_hash":   newBlock.Hash,
 		"proof":        newBlock.Proof,
 		"transactions": newBlock.Transactions,
 	}))
+}
+
+// 5. GET /blockchain – отримати весь ланцюг (для налагодження)
+func getBlockchainHandler(c *gin.Context, bc *Blockchain) {
+	c.JSON(http.StatusOK, formatResponse("success", bc.Chain))
 }
 
 // -------------------- ГОЛОВНА ФУНКЦІЯ --------------------
@@ -191,18 +242,26 @@ func main() {
 	// Створення маршрутизатора Gin
 	r := gin.Default()
 
-	// Ендпоінти API
+	// API цифрового реєстру
+	r.POST("/registry/record", func(c *gin.Context) {
+		addRecordHandler(c, blockchain)
+	})
+	r.GET("/registry/records", func(c *gin.Context) {
+		getRecordsHandler(c, blockchain)
+	})
+	r.GET("/registry/verify/:id", func(c *gin.Context) {
+		verifyRecordHandler(c, blockchain)
+	})
+
+	// Загальні API блокчейну (з лаб2)
 	r.GET("/blockchain", func(c *gin.Context) {
 		getBlockchainHandler(c, blockchain)
 	})
-	r.POST("/transaction", func(c *gin.Context) {
-		addTransactionHandler(c, blockchain)
-	})
 	r.GET("/mine", func(c *gin.Context) {
-		mineBlockHandler(c, blockchain)
+		mineHandler(c, blockchain)
 	})
 
-	// Запуск сервера на порту 8088
-	fmt.Println("Server is running on http://localhost:8088")
+	// Запуск сервера
+	fmt.Println("Digital Registry API running on http://localhost:8088")
 	r.Run(":8088")
 }
