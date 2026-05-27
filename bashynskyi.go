@@ -6,217 +6,223 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"net/http"
 	"os"
-	"strconv"
 	"strings"
+	"time"
 
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
 )
 
-const (
-	rpcURL  = "https://ethereum-sepolia-rpc.publicnode.com"
-	chainID = 11155111 // Sepolia
+// ===================== CONFIGURATION =====================
+
+const contractABI = `[
+  {
+    "inputs": [],
+    "name": "increment",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "counter",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "getCounter",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  }
+]`
+
+var (
+	client      *ethclient.Client
+	contractAbi abi.ABI
+	address     common.Address
+	privateKey  *ecdsa.PrivateKey
+	chainID     *big.Int
 )
 
-// ========================== КОМАНДА CREATE ==========================
-func createAccount() {
-	privateKey, err := crypto.GenerateKey()
+func init() {
+	// Load .env file
+	if err := godotenv.Load(); err != nil {
+		log.Println("No .env file found, using system environment variables")
+	}
+
+	rpcURL := os.Getenv("RPC_URL")
+	if rpcURL == "" {
+		log.Fatal("RPC_URL not set")
+	}
+
+	contractAddr := os.Getenv("CONTRACT_ADDRESS")
+	if contractAddr == "" {
+		log.Fatal("CONTRACT_ADDRESS not set")
+	}
+
+	privKeyHex := os.Getenv("PRIVATE_KEY")
+	if privKeyHex == "" {
+		log.Fatal("PRIVATE_KEY not set")
+	}
+
+	chainIDStr := os.Getenv("CHAIN_ID")
+	if chainIDStr == "" {
+		chainIDStr = "11155111"
+	}
+	id := new(big.Int)
+	id.SetString(chainIDStr, 10)
+	chainID = id
+
+	// Connect to RPC
+	var err error
+	client, err = ethclient.Dial(rpcURL)
 	if err != nil {
-		log.Fatal("Помилка генерації ключа:", err)
+		log.Fatal("Failed to connect to RPC:", err)
 	}
 
-	privateKeyBytes := crypto.FromECDSA(privateKey)
-	privateKeyHex := hexutil.Encode(privateKeyBytes)
-
-	publicKey := privateKey.Public()
-	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
-	if !ok {
-		log.Fatal("Помилка перетворення публічного ключа")
+	contractAbi, err = abi.JSON(strings.NewReader(contractABI))
+	if err != nil {
+		log.Fatal("Failed to parse ABI:", err)
 	}
-	address := crypto.PubkeyToAddress(*publicKeyECDSA)
 
-	fmt.Println("=== НОВИЙ АКАУНТ ===")
-	fmt.Println("Адреса:", address.Hex())
-	fmt.Println("Приватний ключ (hex):", privateKeyHex)
-	fmt.Println("\n⚠️ Збережіть приватний ключ у безпечному місці!")
+	address = common.HexToAddress(contractAddr)
+
+	cleanKey := strings.TrimPrefix(privKeyHex, "0x")
+	privateKey, err = crypto.HexToECDSA(cleanKey)
+	if err != nil {
+		log.Fatal("Failed to load private key:", err)
+	}
 }
 
-// ========================== КОМАНДА BALANCE ==========================
-func getBalance(addressHex string) {
-	if !common.IsHexAddress(addressHex) {
-		log.Fatal("Неправильний формат адреси")
-	}
-	address := common.HexToAddress(addressHex)
-
-	client, err := ethclient.Dial(rpcURL)
+// ===================== GET /contract/counter =====================
+func getCounterHandler(c *gin.Context) {
+	data, err := contractAbi.Pack("counter")
 	if err != nil {
-		log.Fatal("Помилка підключення до RPC:", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ABI pack failed"})
+		return
 	}
-	defer client.Close()
 
-	ctx := context.Background()
-	balanceWei, err := client.BalanceAt(ctx, address, nil)
+	msg := ethereum.CallMsg{To: &address, Data: data}
+	result, err := client.CallContract(context.Background(), msg, nil)
 	if err != nil {
-		log.Fatal("Помилка отримання балансу:", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Contract call failed"})
+		return
 	}
 
-	// конвертуємо wei → ETH
-	balanceETH := new(big.Float).Quo(
-		new(big.Float).SetInt(balanceWei),
-		new(big.Float).SetFloat64(1e18),
-	)
-	fmt.Printf("Баланс %s: %.6f ETH\n", addressHex, balanceETH)
+	values, err := contractAbi.Unpack("counter", result)
+	if err != nil || len(values) == 0 {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to unpack result"})
+		return
+	}
+	counter := values[0].(*big.Int)
+
+	c.JSON(http.StatusOK, gin.H{
+		"counter": counter.String(),
+	})
 }
 
-// ========================== ПІДПИС ПОВІДОМЛЕНЬ ==========================
-func signMessage(privateKeyHex, message string) {
-	privateKey, err := crypto.HexToECDSA(strings.TrimPrefix(privateKeyHex, "0x"))
-	if err != nil {
-		log.Fatal("Неправильний приватний ключ:", err)
-	}
+// ===================== POST /contract/increment =====================
+func incrementHandler(c *gin.Context) {
+	startTime := time.Now()
 
-	// Хешуємо повідомлення за стандартом Ethereum (EIP-191 префікс)
-	data := []byte(message)
-	hash := crypto.Keccak256Hash(data)
-
-	signature, err := crypto.Sign(hash.Bytes(), privateKey)
-	if err != nil {
-		log.Fatal("Помилка підпису:", err)
-	}
-
-	fmt.Println("Підписано повідомлення:", message)
-	fmt.Println("Хеш (Keccak256):", hash.Hex())
-	fmt.Println("Підпис (hex):", hexutil.Encode(signature))
-
-	// Перевірка підпису
-	pubKeyBytes, err := crypto.Ecrecover(hash.Bytes(), signature)
-	if err != nil {
-		log.Fatal("Помилка відновлення публічного ключа:", err)
-	}
-	recoveredPubKey, err := crypto.UnmarshalPubkey(pubKeyBytes)
-	if err != nil {
-		log.Fatal("Помилка розбору публічного ключа:", err)
-	}
-	recoveredAddress := crypto.PubkeyToAddress(*recoveredPubKey)
-
-	originalAddress := crypto.PubkeyToAddress(*privateKey.Public().(*ecdsa.PublicKey))
-
-	fmt.Println("Перевірка підпису:", recoveredAddress.Hex() == originalAddress.Hex())
-}
-
-// ========================== НАДСИЛАННЯ ETH ==========================
-func sendTransaction(privateKeyHex, toAddressHex string, amountETH float64) {
-	// Приватний ключ
-	privateKey, err := crypto.HexToECDSA(strings.TrimPrefix(privateKeyHex, "0x"))
-	if err != nil {
-		log.Fatal("Неправильний приватний ключ:", err)
-	}
+	// Get sender address from private key
 	fromAddress := crypto.PubkeyToAddress(privateKey.PublicKey)
 
-	toAddress := common.HexToAddress(toAddressHex)
-
-	// Підключення до RPC
-	client, err := ethclient.Dial(rpcURL)
+	// Fetch nonce
+	nonce, err := client.PendingNonceAt(context.Background(), fromAddress)
 	if err != nil {
-		log.Fatal("Помилка підключення:", err)
-	}
-	defer client.Close()
-
-	ctx := context.Background()
-
-	// Отримуємо nonce (кількість вже надісланих транзакцій)
-	nonce, err := client.PendingNonceAt(ctx, fromAddress)
-	if err != nil {
-		log.Fatal("Помилка отримання nonce:", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Nonce error"})
+		return
 	}
 
-	// Конвертуємо ETH → Wei
-	amountWei := new(big.Int).Mul(
-		big.NewInt(int64(amountETH*1e18)),
-		big.NewInt(1),
-	)
-
-	// Газові параметри (Sepolia)
-	gasPrice, err := client.SuggestGasPrice(ctx)
+	// Suggest gas price
+	gasPrice, err := client.SuggestGasPrice(context.Background())
 	if err != nil {
-		log.Fatal("Помилка отримання gas price:", err)
-	}
-	gasLimit := uint64(21000) // стандарт для переказу ETH
-
-	// Створюємо транзакцію
-	tx := types.NewTransaction(
-		nonce,
-		toAddress,
-		amountWei,
-		gasLimit,
-		gasPrice,
-		nil, // дані порожні (простий переказ)
-	)
-
-	// Підписуємо транзакцію з ланцюгом Sepolia
-	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(big.NewInt(chainID)), privateKey)
-	if err != nil {
-		log.Fatal("Помилка підпису транзакції:", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gas price error"})
+		return
 	}
 
-	// Надсилаємо
-	err = client.SendTransaction(ctx, signedTx)
+	// Pack increment call
+	data, err := contractAbi.Pack("increment")
 	if err != nil {
-		log.Fatal("Помилка відправки транзакції:", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ABI pack failed"})
+		return
+	}
+
+	// Create unsigned transaction
+	tx := types.NewTransaction(nonce, address, big.NewInt(0), 500000, gasPrice, data)
+
+	// Sign transaction
+	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), privateKey)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Signing failed"})
+		return
+	}
+
+	// Send transaction
+	err = client.SendTransaction(context.Background(), signedTx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Send tx failed"})
+		return
 	}
 
 	txHash := signedTx.Hash().Hex()
-	fmt.Println("✅ Транзакцію надіслано!")
-	fmt.Println("Хеш транзакції:", txHash)
-	fmt.Println("Переглянути на Etherscan:", "https://sepolia.etherscan.io/tx/"+txHash)
+
+	// Wait for receipt (timeout 2 minutes)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	receipt, err := bind.WaitMined(ctx, client, signedTx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Transaction not confirmed within timeout",
+			"txHash": txHash,
+			"hint":   "Check status on Etherscan later",
+		})
+		return
+	}
+
+	confirmationTime := time.Since(startTime).Milliseconds()
+
+	// Return full transaction evaluation
+	c.JSON(http.StatusOK, gin.H{
+		"txHash":         txHash,
+		"status":         receipt.Status, // 1 = success, 0 = fail
+		"gasUsed":        receipt.GasUsed,
+		"blockNumber":    receipt.BlockNumber.String(),
+		"confirmationMs": confirmationTime,
+	})
 }
 
-// ========================== ОСНОВНА CLI ==========================
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Використання:")
-		fmt.Println("  go run main.go create")
-		fmt.Println("  go run main.go balance <address>")
-		fmt.Println("  go run main.go sign <private_key_hex> \"message\"")
-		fmt.Println("  go run main.go send <private_key_hex> <to_address> <amount_in_ETH>")
-		os.Exit(1)
-	}
+	r := gin.Default()
 
-	command := os.Args[1]
+	r.GET("/contract/counter", getCounterHandler)
+	r.POST("/contract/increment", incrementHandler)
 
-	switch command {
-	case "create":
-		createAccount()
-
-	case "balance":
-		if len(os.Args) != 3 {
-			log.Fatal("Використання: balance <address>")
-		}
-		getBalance(os.Args[2])
-
-	case "sign":
-		if len(os.Args) != 4 {
-			log.Fatal("Використання: sign <private_key_hex> \"message\"")
-		}
-		signMessage(os.Args[2], os.Args[3])
-
-	case "send":
-		if len(os.Args) != 5 {
-			log.Fatal("Використання: send <private_key_hex> <to_address> <amount_in_ETH>")
-		}
-		amount, err := strconv.ParseFloat(os.Args[4], 64)
-		if err != nil {
-			log.Fatal("Неправильна сума ETH")
-		}
-		sendTransaction(os.Args[2], os.Args[3], amount)
-
-	default:
-		fmt.Println("Невідома команда:", command)
-	}
+	fmt.Println("Server running on http://localhost:8088")
+	r.Run(":8088")
 }
-
-// Додати в import "strconv" (для parseFloat)
