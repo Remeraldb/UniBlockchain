@@ -2,227 +2,117 @@ package main
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"fmt"
 	"log"
 	"math/big"
-	"net/http"
 	"os"
 	"strings"
-	"time"
 
-	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+
+	"blockchain/storage" // use your module name
 )
 
-// ===================== CONFIGURATION =====================
-
-const contractABI = `[
-  {
-    "inputs": [],
-    "name": "increment",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [],
-    "name": "counter",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [],
-    "name": "getCounter",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  }
-]`
-
-var (
-	client      *ethclient.Client
-	contractAbi abi.ABI
-	address     common.Address
-	privateKey  *ecdsa.PrivateKey
-	chainID     *big.Int
-)
-
-func init() {
-	// Load .env file
+func main() {
+	// Load .env
 	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, using system environment variables")
+		log.Println("No .env file")
 	}
 
 	rpcURL := os.Getenv("RPC_URL")
-	if rpcURL == "" {
-		log.Fatal("RPC_URL not set")
-	}
-
 	contractAddr := os.Getenv("CONTRACT_ADDRESS")
-	if contractAddr == "" {
-		log.Fatal("CONTRACT_ADDRESS not set")
-	}
-
 	privKeyHex := os.Getenv("PRIVATE_KEY")
-	if privKeyHex == "" {
-		log.Fatal("PRIVATE_KEY not set")
+	if rpcURL == "" || contractAddr == "" || privKeyHex == "" {
+		log.Fatal("Missing env vars")
 	}
 
-	chainIDStr := os.Getenv("CHAIN_ID")
-	if chainIDStr == "" {
-		chainIDStr = "11155111"
-	}
-	id := new(big.Int)
-	id.SetString(chainIDStr, 10)
-	chainID = id
-
-	// Connect to RPC
-	var err error
-	client, err = ethclient.Dial(rpcURL)
+	client, err := ethclient.Dial(rpcURL)
 	if err != nil {
-		log.Fatal("Failed to connect to RPC:", err)
+		log.Fatal("RPC connection error:", err)
 	}
 
-	contractAbi, err = abi.JSON(strings.NewReader(contractABI))
+	privateKey, err := crypto.HexToECDSA(strings.TrimPrefix(privKeyHex, "0x"))
 	if err != nil {
-		log.Fatal("Failed to parse ABI:", err)
+		log.Fatal("Invalid private key:", err)
 	}
 
-	address = common.HexToAddress(contractAddr)
-
-	cleanKey := strings.TrimPrefix(privKeyHex, "0x")
-	privateKey, err = crypto.HexToECDSA(cleanKey)
+	contractAddress := common.HexToAddress(contractAddr)
+	instance, err := storage.NewStorage(contractAddress, client)
 	if err != nil {
-		log.Fatal("Failed to load private key:", err)
+		log.Fatal("Contract instance error:", err)
 	}
-}
 
-// ===================== GET /contract/counter =====================
-func getCounterHandler(c *gin.Context) {
-	data, err := contractAbi.Pack("counter")
+	// Read initial value
+	initialData, err := instance.Data(&bind.CallOpts{})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "ABI pack failed"})
-		return
+		log.Fatal("Read error:", err)
 	}
+	fmt.Println("Initial data:", initialData)
 
-	msg := ethereum.CallMsg{To: &address, Data: data}
-	result, err := client.CallContract(context.Background(), msg, nil)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Contract call failed"})
-		return
-	}
-
-	values, err := contractAbi.Unpack("counter", result)
-	if err != nil || len(values) == 0 {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to unpack result"})
-		return
-	}
-	counter := values[0].(*big.Int)
-
-	c.JSON(http.StatusOK, gin.H{
-		"counter": counter.String(),
-	})
-}
-
-// ===================== POST /contract/increment =====================
-func incrementHandler(c *gin.Context) {
-	startTime := time.Now()
-
-	// Get sender address from private key
+	// Prepare transaction
 	fromAddress := crypto.PubkeyToAddress(privateKey.PublicKey)
-
-	// Fetch nonce
 	nonce, err := client.PendingNonceAt(context.Background(), fromAddress)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Nonce error"})
-		return
+		log.Fatal("Nonce error:", err)
 	}
-
-	// Suggest gas price
 	gasPrice, err := client.SuggestGasPrice(context.Background())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gas price error"})
-		return
+		log.Fatal("Gas price error:", err)
 	}
-
-	// Pack increment call
-	data, err := contractAbi.Pack("increment")
+	chainID, err := client.ChainID(context.Background())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "ABI pack failed"})
-		return
+		log.Fatal("ChainID error:", err)
 	}
 
-	// Create unsigned transaction
-	tx := types.NewTransaction(nonce, address, big.NewInt(0), 500000, gasPrice, data)
-
-	// Sign transaction
-	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), privateKey)
+	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Signing failed"})
-		return
+		log.Fatal("Auth error:", err)
 	}
+	auth.Nonce = big.NewInt(int64(nonce))
+	auth.GasPrice = gasPrice
+	auth.GasLimit = 300000
 
 	// Send transaction
-	err = client.SendTransaction(context.Background(), signedTx)
+	newValue := "Hello from Go!"
+	tx, err := instance.SetData(auth, newValue)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Send tx failed"})
-		return
+		log.Fatal("Transaction error:", err)
 	}
+	fmt.Println("Tx sent:", tx.Hash().Hex())
+	fmt.Println("Waiting for confirmation...")
 
-	txHash := signedTx.Hash().Hex()
-
-	// Wait for receipt (timeout 2 minutes)
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-	receipt, err := bind.WaitMined(ctx, client, signedTx)
+	receipt, err := bind.WaitMined(context.Background(), client, tx)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":  "Transaction not confirmed within timeout",
-			"txHash": txHash,
-			"hint":   "Check status on Etherscan later",
-		})
-		return
+		log.Fatal("Mining error:", err)
 	}
+	if receipt.Status == 0 {
+		log.Fatal("Transaction failed")
+	}
+	fmt.Println("Transaction confirmed")
 
-	confirmationTime := time.Since(startTime).Milliseconds()
+	// Read new value
+	newData, err := instance.Data(&bind.CallOpts{})
+	if err != nil {
+		log.Fatal("Read new data error:", err)
+	}
+	fmt.Println("New data:", newData)
 
-	// Return full transaction evaluation
-	c.JSON(http.StatusOK, gin.H{
-		"txHash":         txHash,
-		"status":         receipt.Status, // 1 = success, 0 = fail
-		"gasUsed":        receipt.GasUsed,
-		"blockNumber":    receipt.BlockNumber.String(),
-		"confirmationMs": confirmationTime,
-	})
-}
-
-func main() {
-	r := gin.Default()
-
-	r.GET("/contract/counter", getCounterHandler)
-	r.POST("/contract/increment", incrementHandler)
-
-	fmt.Println("Server running on http://localhost:8088")
-	r.Run(":8088")
+	// Listen to event
+	blockNum := receipt.BlockNumber.Uint64() // convert *big.Int to uint64
+	filterOpts := &bind.FilterOpts{
+		Start: blockNum,
+		End:   &blockNum,
+	}
+	iter, err := instance.FilterDataChanged(filterOpts)
+	if err != nil {
+		log.Fatal("Filter events error:", err)
+	}
+	for iter.Next() {
+		event := iter.Event
+		fmt.Printf("Event DataChanged: old=%s, new=%s\n", event.OldValue, event.NewValue)
+	}
 }
