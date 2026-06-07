@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SimpleBank DApp</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body { background: #f0f2f5; }
+        .card { border-radius: 15px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .status { font-size: 14px; color: #666; }
+        #eventLog { background: #1e1e2f; color: #fff; border-radius: 10px; padding: 15px; font-family: monospace; height: 300px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+<div class="container py-4">
+    <h1 class="text-center mb-4"><i class="fas fa-university"></i> SimpleBank DApp</h1>
+
+    <div class="row">
+        <!-- Панель підключення -->
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-body">
+                    <div id="networkStatus" class="status"></div>
+                    <h5><i class="fas fa-wallet"></i> Гаманець</h5>
+                    <button class="btn btn-primary w-100" id="connectBtn"><i class="fas fa-plug"></i> Підключити MetaMask</button>
+                    <div class="mt-2 status" id="status">Не підключено</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Баланс -->
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-body">
+                    <h5><i class="fas fa-coins"></i> Мій баланс</h5>
+                    <input type="text" id="balanceAddress" class="form-control mb-2" placeholder="Ваша адреса (0x...)" value="">
+                    <button class="btn btn-success w-100" id="getBalanceBtn">Отримати баланс</button>
+                    <div class="mt-2 alert alert-secondary" id="balanceDisplay">0 ETH</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Депозит -->
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-body">
+                    <h5><i class="fas fa-plus-circle"></i> Депозит</h5>
+                    <<input type="number" id="depositAmount" class="form-control mb-2" step="any" placeholder="Сума в ETH">
+                    <button class="btn btn-warning w-100" id="depositBtn">Поповнити</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row mt-3">
+        <!-- Переказ -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-body">
+                    <h5><i class="fas fa-exchange-alt"></i> Переказ</h5>
+                    <input type="text" id="transferTo" class="form-control mb-2" placeholder="Адреса отримувача">
+                    <input type="number" id="transferAmount" class="form-control mb-2" placeholder="Сума в ETH">
+                    <button class="btn btn-danger w-100" id="transferBtn">Відправити</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Лог подій -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-body">
+                    <h5><i class="fas fa-list"></i> Журнал подій (live)</h5>
+                    <div id="eventLog">Очікування подій...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/web3@1.10.0/dist/web3.min.js"></script>
+<script src="/static/web.js"></script>
+</body>
+</html>
